@@ -68,9 +68,14 @@ pub async fn post_box_report(
         ))));
     }
     // 获取缓存Task数据
-    let task = enrich_payload_with_task_data(&app_state, &mut payload)
-        .await
+    let task = enrich_payload_with_task_data(&app_state, &mut payload).await
         .map_err(|err| internal_anyhow_err(err))?;
+    // 基础字段赋值
+    payload.project_id = task.project_id.unwrap_or(0);
+    payload.project_name = task.project_name.clone().unwrap_or_default();
+    payload.company_id = task.org_id.unwrap_or(0);
+    payload.company_name = task.org_name.clone().unwrap_or_default();
+
     // 冷却时间逻辑校验
     if handle_cooling_down_filter(&app_state, &payload, &mut redis_conn).await {
         tracing::info!(
@@ -374,6 +379,7 @@ async fn push_event_to_dq(
 
 // --- Helper Functions ---
 
+
 /// Fetches task data and enriches the payload, mirroring `deposeBaseEventTaskData`.
 async fn enrich_payload_with_task_data(
     app_state: &Arc<AppState>,
@@ -393,18 +399,6 @@ async fn enrich_payload_with_task_data(
     match task {
         Ok(tasks) if !tasks.is_empty() => {
             let task = tasks.into_iter().next().unwrap();
-            payload.project_id = task.project_id.unwrap_or(0);
-            payload.project_name = task.project_name.clone().unwrap_or_default();
-            payload.company_id = task.org_id.unwrap_or(0);
-            payload.company_name = task.org_name.clone().unwrap_or_default();
-
-            let mut extra = payload.extra.clone().unwrap_or_else(|| json!({}));
-            if let Some(_map) = extra.as_object_mut() {
-                // Java's taskCacheVo.getVersion() is not available in Rust's task::Model
-                // _map.insert("task_version".to_string(), json!(task.version));
-            }
-            payload.extra = Some(extra);
-
             Ok(task)
         }
         _ => Err(anyhow!("获取task {:?} 缓存信息失败", task_code)), // Return concrete error type
