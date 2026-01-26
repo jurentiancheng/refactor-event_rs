@@ -626,6 +626,7 @@ dependencies = [
  "base64",
  "chrono",
  "dotenvy",
+ "once_cell",
  "redis",
  "reqwest",
  "sea-orm",

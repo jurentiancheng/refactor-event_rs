@@ -1,10 +1,14 @@
+use once_cell::sync::Lazy;
 use sea_orm::{DbConn, DbErr, EntityTrait};
 use redis::{Client, Commands};
+use tokio::sync::Mutex;
+use tracing;
 
 use crate::models::{prelude::*, event_filter_config};
 
 const CACHE_KEY_EVENT_FILTER_CONFIGS: &str = "all_event_filter_configs";
 const CACHE_TTL: u64 = 180; // 3 minutes in seconds
+static EVENT_FILTER_CONFIGS_FETCH_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 /// Fetches all event filter configs, using a cache with a 3-minute TTL.
 pub async fn get_all_event_filter_configs(
@@ -22,10 +26,28 @@ pub async fn get_all_event_filter_configs(
         }
     }
 
-    // 2. If not in cache, query the database
-    let configs = EventFilterConfig::find().all(db).await?;
+    // 2. If not in cache, acquire lock to prevent cache stampede
+    let _lock = EVENT_FILTER_CONFIGS_FETCH_LOCK.lock().await;
 
-    // 3. Store in cache
+    // Re-check cache after acquiring lock
+    if let Ok(cached_configs) = redis_conn.get::<_, String>(CACHE_KEY_EVENT_FILTER_CONFIGS) {
+        if !cached_configs.is_empty() {
+            if let Ok(configs) = serde_json::from_str(&cached_configs) {
+                return Ok(configs);
+            }
+        }
+    }
+    
+    // 3. If still not in cache, query the database
+    let configs = match EventFilterConfig::find().all(db).await {
+        Ok(configs) => configs,
+        Err(e) => {
+            tracing::error!("Failed to fetch event filter configs from database: {}", e);
+            return Err(e);
+        }
+    };
+
+    // 4. Store in cache
     if let Ok(configs_json) = serde_json::to_string(&configs) {
         let _: () = redis_conn.set_ex(CACHE_KEY_EVENT_FILTER_CONFIGS, configs_json, CACHE_TTL).unwrap_or_default();
     }

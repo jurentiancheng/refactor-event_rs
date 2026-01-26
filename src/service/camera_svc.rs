@@ -1,10 +1,14 @@
+use once_cell::sync::Lazy;
 use sea_orm::{DbConn, DbErr, EntityTrait};
 use redis::{Client, Commands};
+use tokio::sync::Mutex;
 
 use crate::models::{prelude::*, camera};
 
 const CACHE_KEY_CAMERAS: &str = "all_cameras";
 const CACHE_TTL: u64 = 180; // 3 minutes in seconds
+static CAMERA_FETCH_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
 
 /// Fetches all cameras, using a cache with a 3-minute TTL.
 pub async fn get_all_cameras(
@@ -18,6 +22,16 @@ pub async fn get_all_cameras(
         if !cached_cameras.is_empty() {
             if let Ok(cameras) = serde_json::from_str(&cached_cameras) {
                 return Ok(cameras);
+            }
+        }
+    }
+
+    let _lock =  CAMERA_FETCH_LOCK.lock().await;
+
+    if let Ok(cached_cameras) = redis_conn.get::<_ , String>(CACHE_KEY_CAMERAS) {
+        if !cached_cameras.is_empty() {
+            if let Ok(camera) = serde_json::from_str(&cached_cameras) {
+                return Ok(camera)
             }
         }
     }
