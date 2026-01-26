@@ -3,7 +3,7 @@
 use redis::Commands;
 use serde_json::Value;
 
-use crate::ctl::box_report_ctl::BoxReportRequest;
+use crate::ctl::bs_model::BoxReportRequest;
 
 const PLATE_COLOR_YELLOW: &[&str] = &["s_yellow", "d_yellow"];
 

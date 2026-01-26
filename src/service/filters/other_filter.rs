@@ -3,7 +3,7 @@
 use redis::Commands;
 use serde_json::{Value, json};
 
-use crate::ctl::box_report_ctl::BoxReportRequest;
+use crate::ctl::bs_model::BoxReportRequest;
 
 /// The main filter function for other events.
 /// Returns `(true, reason)` if the event should be filtered.

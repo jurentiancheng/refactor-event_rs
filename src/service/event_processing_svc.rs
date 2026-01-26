@@ -1,6 +1,6 @@
 //! High-level business logic for event processing.
 
-use crate::ctl::box_report_ctl::BoxReportRequest;
+use crate::ctl::bs_model::BoxReportRequest;
 use crate::models::{algorithm, event_filter_config};
 use crate::service::filters::{other_filter, plate_filter};
 use chrono::NaiveTime;
