@@ -1,4 +1,3 @@
-
 use crate::models::event;
 use anyhow::{Context, Result};
 use sea_orm::{ActiveModelTrait, DbConn, DbErr, IntoActiveModel, Set};
@@ -16,10 +15,13 @@ pub async fn create_event(db: &DbConn, event_data: event::Model) -> Result<event
         _ => None, // Or handle NotSet/Unchanged if applicable, though for new records it should be Set.
     };
 
-    let inserted_event = active_model
-        .insert(db)
-        .await
-        .map_err(|err| anyhow::anyhow!("Error inserting event with id: {:?}, err:{}",inserted_id_for_log, err))?;
+    let inserted_event = active_model.insert(db).await.map_err(|err| {
+        anyhow::anyhow!(
+            "Error inserting event with id: {:?}, err:{}",
+            inserted_id_for_log,
+            err
+        )
+    })?;
     Ok(inserted_event)
 }
 
