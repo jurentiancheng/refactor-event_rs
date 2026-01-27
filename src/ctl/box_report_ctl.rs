@@ -1,17 +1,14 @@
-use anyhow::{Context, Result, anyhow};
-use axum::{
-    extract::State,
-    response::Json,
-};
-use chrono::{Duration, TimeZone, Utc};
+use anyhow::{Result, anyhow};
+use axum::{extract::State, response::Json};
+use chrono::{Duration, Local, TimeZone, Utc};
 use redis::Commands;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::{
     app_state::AppState,
-    models::{event, task},
     ctl::bs_model::{BoxReportRequest, ReviewDataPushVo},
+    models::{event, task},
     service::{
         algorithm_svc, base_config_svc, event_filter_config_svc, event_processing_svc, event_svc,
         task_svc,
@@ -68,7 +65,8 @@ pub async fn post_box_report(
         ))));
     }
     // 获取缓存Task数据
-    let task = enrich_payload_with_task_data(&app_state, &mut payload).await
+    let task = enrich_payload_with_task_data(&app_state, &mut payload)
+        .await
         .map_err(|err| internal_anyhow_err(err))?;
     // 基础字段赋值
     payload.project_id = task.project_id.unwrap_or(0);
@@ -179,12 +177,12 @@ pub async fn post_box_report(
 
     if review_status == event_processing_svc::PersonnelCheckResult::Enable {
         event_model.marking = Some("init".to_string());
-        event_model.marking_time = Some(Utc::now().naive_local());
+        event_model.marking_time = Some(Local::now().naive_local());
         should_push_to_dq = true;
     } else {
         let mut extra = event_model.extra.unwrap_or(json!({}));
         let marking =
-            json!({"MarkEventCount": 1, "MarkingBy": 0, "MarkingTime": Utc::now().naive_local()});
+            json!({"MarkEventCount": 1, "MarkingBy": 0, "MarkingTime": Local::now().naive_local()});
         extra["marking"] = marking;
         event_model.extra = Some(extra);
         event_model.marking = Some("event".to_string());
@@ -379,13 +377,17 @@ async fn push_event_to_dq(
 
 // --- Helper Functions ---
 
-
 /// Fetches task data and enriches the payload, mirroring `deposeBaseEventTaskData`.
 async fn enrich_payload_with_task_data(
     app_state: &Arc<AppState>,
     payload: &mut BoxReportRequest,
 ) -> Result<task::Model> {
-    let task_code = payload.task_code.as_deref().unwrap_or("");
+    
+    let Some(task_code) = payload.task_code.as_deref() else {
+        tracing::error!("Task code is missing in the payload.");
+        return Err(anyhow!("Task code is missing in the payload."));
+    };
+
     let task = task_svc::find_running_tasks_by_criteria(
         &app_state.db,
         &app_state.redis_client,
@@ -493,7 +495,7 @@ async fn handle_cooling_down_filter(
 
 /// Simulates pushing the event to a "filtered" Kafka topic.
 async fn push_to_kafka_filtered(app_state: Arc<AppState>, payload: &BoxReportRequest) {
-    if payload.marking.as_deref() != Some("event") {
+    if payload.marking.as_deref() == Some("init") {
         let topic = "PLATFORM_CUSTOMER_META_EVENTS_FILTERED";
         let url = format!(
             "{}/v1/message/center/mq/produce/topic/{}",
@@ -501,51 +503,45 @@ async fn push_to_kafka_filtered(app_state: Arc<AppState>, payload: &BoxReportReq
         );
 
         // Serialize the payload to JSON
-        let json_payload = match serde_json::to_value(payload) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!("Failed to serialize BoxReportRequest to JSON: {}", e);
-                return;
-            }
+        let Ok(json_payload) = serde_json::to_value(payload) else {
+            tracing::error!("Failed to serialize payload to JSON");
+            return;
         };
 
         // Create a reqwest client
         let client = reqwest::Client::new();
 
         // Send the POST request
-        match client.post(&url).json(&json_payload).send().await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    tracing::info!(
-                        "Successfully pushed event to Kafka topic '{}' via Message Center API for event ID: {}",
-                        topic,
-                        payload.engine_event_id.as_deref().unwrap_or("")
-                    );
-                } else {
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    tracing::error!(
-                        "Failed to push event to Kafka topic '{}' via Message Center API. Status: {}, Body: {}",
-                        topic,
-                        status,
-                        body
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to send HTTP request to Message Center API for Kafka topic '{}': {}",
-                    topic,
-                    e
-                );
-            }
-        }
+        let Ok(response) = client.post(&url).json(&json_payload).send().await else {
+            tracing::error!(
+                "Failed to send HTTP request to Message Center API for Kafka topic '{}', reviewData.eventId:{}",
+                topic,
+                payload.id.unwrap_or_default()
+            );
+            return;
+        };
+        if response.status().is_success() {
+            tracing::info!(
+                "Successfully pushed event to Kafka topic '{}' via Message Center API for event ID: {}",
+                topic,
+                payload.engine_event_id.as_deref().unwrap_or("")
+            );
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(
+                "Failed to push event to Kafka topic '{}' via Message Center API. Status: {}, Body: {}",
+                topic,
+                status,
+                body
+            );
+        };
     }
 }
 
 /// Maps the final request payload and task data to the database event model.
 fn event_from_payload(payload: &BoxReportRequest, task: &task::Model) -> event::Model {
-    let generated_id = Utc::now().timestamp_millis();
+    let generated_id = Local::now().timestamp_millis();
     event::Model {
         id: payload.id.unwrap_or(generated_id),
         project_id: Some(payload.project_id),
@@ -557,8 +553,9 @@ fn event_from_payload(payload: &BoxReportRequest, task: &task::Model) -> event::
         scene_id: task.scene_id,
         source: payload.source.clone(),
         event_type: payload.event_type.clone(),
-        event_time: payload.event_time.map(|dt| dt.naive_utc()),
-        end_time: payload.end_time.map(|dt| dt.naive_utc()),
+        event_type_name: payload.event_type_name.clone(),
+        event_time: payload.event_time.map(|dt| dt.naive_local()),
+        end_time: payload.end_time.map(|dt| dt.naive_local()),
         marking: payload.marking.clone(),
         engine_event_id: payload.engine_event_id.clone(),
         vehicle_type: payload.vehicle_type.clone(),
@@ -576,9 +573,8 @@ fn event_from_payload(payload: &BoxReportRequest, task: &task::Model) -> event::
         evidence_url: payload.evidence_url.clone(),
         original_violation_index: payload.original_violation_index,
         extra: payload.extra.clone(),
-        event_type_name: None,
         marking_time: if payload.marking.as_deref() == Some("event") {
-            Some(Utc::now().naive_utc())
+            Some(Local::now().naive_local())
         } else {
             None
         },
@@ -586,10 +582,10 @@ fn event_from_payload(payload: &BoxReportRequest, task: &task::Model) -> event::
         car_in_event: None,
         filtered_type: None,
         marking_count: None,
-        create_time: Utc::now().naive_utc(),
-        update_time: Utc::now().naive_utc(),
-        create_by: None,
-        update_by: None,
+        create_time: Local::now().naive_local(),
+        update_time: Local::now().naive_local(),
+        create_by: Some(0),
+        update_by: Some(0),
         is_del: 0,
     }
 }

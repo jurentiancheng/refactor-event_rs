@@ -13,6 +13,7 @@ pub struct BoxReportRequest {
     pub task_code: Option<String>,
     pub source: Option<String>,
     pub event_type: Option<String>,
+    pub event_type_name: Option<String>,
     #[serde(with = "chrono::serde::ts_milliseconds_option")]
     pub event_time: Option<chrono::DateTime<Utc>>,
     #[serde(with = "chrono::serde::ts_milliseconds_option")]
