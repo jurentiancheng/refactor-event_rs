@@ -71,8 +71,6 @@ pub async fn post_box_report(
     // 基础字段赋值
     payload.project_id = task.project_id.unwrap_or(0);
     payload.project_name = task.project_name.clone().unwrap_or_default();
-    payload.company_id = task.org_id.unwrap_or(0);
-    payload.company_name = task.org_name.clone().unwrap_or_default();
 
     // 冷却时间逻辑校验
     if handle_cooling_down_filter(&app_state, &payload, &mut redis_conn).await {
@@ -92,6 +90,7 @@ pub async fn post_box_report(
             logging_engine_event_id
         ))));
     };
+
     // 检索base_config 配置信息
     let _base_config = base_config_svc::find_base_configs_by_project_id(
         &app_state.db,
@@ -128,7 +127,10 @@ pub async fn post_box_report(
             .arg("EX")
             .arg(600)
             .query(&mut redis_conn);
-
+        
+        // 如果是过滤事件直接入Kafka队列
+        push_to_kafka_filtered(app_state.clone(), &payload).await;
+        
         return Ok(Json(RespResult::ok_with_msg(format!(
             "盒子上报信息: engin_event_id: {}, RESULT: Invalid source",
             logging_engine_event_id
@@ -153,11 +155,20 @@ pub async fn post_box_report(
             logging_engine_event_id
         ))));
     };
+
+    // 获取event_type 信息
+    let Some(event_type) = payload.event_type.as_deref() else {
+        return Ok(Json(RespResult::ok_with_msg(format!(
+            "盒子上报信息: engin_event_id: {}, RESULT: 校验异常：Invalid event_type",
+            logging_engine_event_id
+        ))));
+    };
+
     // 人审判断
     let review_status = match algorithm_svc::find_algorithm_by_code(
         &app_state.db,
         &app_state.redis_client,
-        payload.event_type.as_deref().unwrap_or(""),
+        event_type,
     )
     .await
     {
@@ -197,8 +208,6 @@ pub async fn post_box_report(
         push_event_to_dq(app_state.clone(), &payload, &task, saved_event.id).await;
     }
 
-    // 如果是过滤事件直接入Kafka队列
-    push_to_kafka_filtered(app_state.clone(), &payload).await;
     // 事件engin_event_id到Redis 防止重放
     let _: Result<(), _> = redis::cmd("SET")
         .arg(&payload.engine_event_id)
@@ -343,7 +352,7 @@ async fn push_event_to_dq(
             return;
         }
     };
-
+    tracing::info!("Sending eventDto: {} to DQ service", json_payload);
     // Create a reqwest client
     let client = reqwest::Client::new();
 
@@ -495,7 +504,7 @@ async fn handle_cooling_down_filter(
 
 /// Simulates pushing the event to a "filtered" Kafka topic.
 async fn push_to_kafka_filtered(app_state: Arc<AppState>, payload: &BoxReportRequest) {
-    if payload.marking.as_deref() == Some("init") {
+    if payload.marking.as_deref() == Some("filtered") {
         let topic = "PLATFORM_CUSTOMER_META_EVENTS_FILTERED";
         let url = format!(
             "{}/v1/message/center/mq/produce/topic/{}",
@@ -546,8 +555,6 @@ fn event_from_payload(payload: &BoxReportRequest, task: &task::Model) -> event::
         id: payload.id.unwrap_or(generated_id),
         project_id: Some(payload.project_id),
         project_name: Some(payload.project_name.clone()),
-        company_id: None,
-        company_name: Some(payload.company_name.clone()),
         task_code: payload.task_code.clone(),
         task_name: task.name.clone(),
         scene_id: task.scene_id,
@@ -582,6 +589,8 @@ fn event_from_payload(payload: &BoxReportRequest, task: &task::Model) -> event::
         car_in_event: None,
         filtered_type: None,
         marking_count: None,
+        company_id: None,
+        company_name: None,
         create_time: Local::now().naive_local(),
         update_time: Local::now().naive_local(),
         create_by: Some(0),
