@@ -27,8 +27,8 @@ pub async fn post_box_report(
     Json(mut payload): Json<BoxReportRequest>,
 ) -> ResultJson<String> {
     // 获取关键信息日志用
-    let logging_engine_event_id = &payload.engine_event_id.clone().unwrap_or_default();
-
+    let logging_engine_event_id = payload.engine_event_id.clone().unwrap_or_default();
+    tracing::info!("盒子上报信息: eventDto engine_event_id: {}", logging_engine_event_id);
     // 验证source字段
     if payload.source.is_none() || payload.source.as_deref() == Some("") {
         return Ok(Json(RespResult::ok_with_msg(format!(
