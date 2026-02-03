@@ -1,8 +1,8 @@
+use anyhow::Result;
 use once_cell::sync::Lazy;
 use sea_orm::{DbConn, DbErr, EntityTrait};
 use redis::{Client, Commands};
 use tokio::sync::Mutex;
-use tracing;
 
 use crate::models::{prelude::*, base_config};
 
@@ -14,7 +14,7 @@ static BASE_CONFIGS_FETCH_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 pub async fn get_all_base_configs(
     db: &DbConn,
     redis_client: &Client,
-) -> Result<Vec<base_config::Model>, DbErr> {
+) -> Result<Vec<base_config::Model>> {
     let mut redis_conn = redis_client.get_connection().map_err(|e| DbErr::Custom(e.to_string()))?;
 
     // 1. Try to fetch from cache
@@ -39,13 +39,7 @@ pub async fn get_all_base_configs(
     }
 
     // 3. If still not in cache, query the database
-    let configs = match BaseConfig::find().all(db).await {
-        Ok(configs) => configs,
-        Err(e) => {
-            tracing::error!("Failed to fetch base configs from database: {}", e);
-            return Err(e);
-        }
-    };
+    let configs = BaseConfig::find().all(db).await?;
 
     // 4. Store in cache
     if let Ok(configs_json) = serde_json::to_string(&configs) {
@@ -60,7 +54,7 @@ pub async fn find_base_configs_by_project_id(
     db: &DbConn,
     redis_client: &Client,
     project_id: i64,
-) -> Result<Option<base_config::Model>, DbErr> {
+) -> Result<Option<base_config::Model>> {
     let configs = get_all_base_configs(db, redis_client).await?;
     Ok(configs
         .into_iter()

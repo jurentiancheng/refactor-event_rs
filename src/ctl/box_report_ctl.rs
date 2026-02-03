@@ -12,20 +12,17 @@ use crate::{
     service::{
         algorithm_svc, base_config_svc, event_filter_config_svc, event_processing_svc, event_svc,
         task_svc,
-    },
-    util::{
-        ResultJson,
-        exception::{internal_anyhow_err, internal_err},
-        result_struct::RespResult,
-    },
+    }
 };
+use event_rs::{ JsonResponse, response_result::{RespResult} };
+
 
 /// Main entry point for handling event reports from boxes.
 /// This function orchestrates the entire event processing pipeline.
 pub async fn post_box_report(
     State(app_state): State<Arc<AppState>>,
     Json(mut payload): Json<BoxReportRequest>,
-) -> ResultJson<String> {
+) -> JsonResponse<String> {
     // 获取关键信息日志用
     let logging_engine_event_id = payload.engine_event_id.clone().unwrap_or_default();
     tracing::info!("盒子上报信息: eventDto engine_event_id: {}", logging_engine_event_id);
@@ -51,7 +48,7 @@ pub async fn post_box_report(
     let mut redis_conn = app_state
         .redis_client
         .get_connection()
-        .map_err(|err| internal_err(err))?;
+        .map_err(|err| anyhow!("Redis connection error: {}", err))?;
 
     // 防重放
     if redis::cmd("EXISTS")
@@ -67,7 +64,7 @@ pub async fn post_box_report(
     // 获取缓存Task数据
     let task = enrich_payload_with_task_data(&app_state, &mut payload)
         .await
-        .map_err(|err| internal_anyhow_err(err))?;
+        .map_err(|err| anyhow!("no task cached data, err:{}", err))?;
     // 基础字段赋值
     payload.project_id = task.project_id.unwrap_or(0);
     payload.project_name = task.project_name.clone().unwrap_or_default();
@@ -118,7 +115,7 @@ pub async fn post_box_report(
 
         let _ = event_svc::create_event(&app_state.db, event_model)
             .await
-            .map_err(|err| internal_anyhow_err(err))?;
+            .map_err(|err| anyhow!(err))?;
 
         push_to_kafka_filtered(app_state.clone(), &payload).await;
         let _: Result<(), _> = redis::cmd("SET")
@@ -201,7 +198,7 @@ pub async fn post_box_report(
     // 执行入库
     let saved_event = event_svc::create_event(&app_state.db, event_model)
         .await
-        .map_err(|err| internal_anyhow_err(err))?;
+        .map_err(|err| anyhow!(err))?;
 
     // If personnel check was enabled, now call push_event_to_dq with saved_event.id
     if should_push_to_dq {

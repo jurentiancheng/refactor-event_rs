@@ -1,8 +1,9 @@
+use anyhow::Result;
 use once_cell::sync::Lazy;
 use sea_orm::{DbConn, DbErr, EntityTrait};
 use redis::{Client, Commands};
 use tokio::sync::Mutex;
-use tracing;
+
 
 use crate::models::{prelude::*, event_filter_config};
 
@@ -14,7 +15,7 @@ static EVENT_FILTER_CONFIGS_FETCH_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::ne
 pub async fn get_all_event_filter_configs(
     db: &DbConn,
     redis_client: &Client,
-) -> Result<Vec<event_filter_config::Model>, DbErr> {
+) -> Result<Vec<event_filter_config::Model>> {
     let mut redis_conn = redis_client.get_connection().map_err(|e| DbErr::Custom(e.to_string()))?;
     
     // 1. Try to fetch from cache
@@ -39,13 +40,7 @@ pub async fn get_all_event_filter_configs(
     }
     
     // 3. If still not in cache, query the database
-    let configs = match EventFilterConfig::find().all(db).await {
-        Ok(configs) => configs,
-        Err(e) => {
-            tracing::error!("Failed to fetch event filter configs from database: {}", e);
-            return Err(e);
-        }
-    };
+    let configs = EventFilterConfig::find().all(db).await?;
 
     // 4. Store in cache
     if let Ok(configs_json) = serde_json::to_string(&configs) {
@@ -60,7 +55,7 @@ pub async fn find_event_filter_configs_by_project_id(
     db: &DbConn,
     redis_client: &Client,
     project_id: i64,
-) -> Result<Vec<event_filter_config::Model>, DbErr> {
+) -> Result<Vec<event_filter_config::Model>> {
     let configs = get_all_event_filter_configs(db, redis_client).await?;
     Ok(configs
         .into_iter()

@@ -1,5 +1,6 @@
 // src/main.rs
 
+use anyhow::Result;
 use axum::{
     routing::{post},
     Router,
@@ -16,12 +17,12 @@ mod models;
 mod ctl;
 mod service;
 mod app_state;
-mod util;
+
 use crate::app_state::AppState;
 
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     // --- 1. Setup tracing and env ---
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "RUST_LOG=debug,event_rs=debug,tower_http=debug".into()))
@@ -64,8 +65,9 @@ async fn main() {
 
     // --- 4. Axum Router ---
     let app = Router::new()
-        .route("/box/report", post(ctl::box_report_ctl::post_box_report))
-        .with_state(app_state.clone())
+        .nest("/v1", Router::new()
+            .route("/box/report", post(ctl::box_report_ctl::post_box_report))
+            .with_state(app_state.clone()))
         .layer(TraceLayer::new_for_http());
 
     // --- 5. Start Server ---
@@ -73,4 +75,5 @@ async fn main() {
     let listener = TcpListener::bind(addr).await.unwrap();
     tracing::info!("listening on {}", addr);
     serve(listener, app.into_make_service()).await.unwrap();
+    Ok(())
 }
